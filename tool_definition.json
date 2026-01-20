@@ -1,0 +1,99 @@
+{
+    "name": "execute_tests",
+    "description": "Executes automated browser tests on a web application using Playwright. Use this tool to run QA test cases by providing a list of steps and the target URL.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "The full URL of the web application to test (e.g., https://example.com)."
+            },
+            "config": {
+                "type": "object",
+                "description": "Configuration options for the test run.",
+                "properties": {
+                    "browser": {
+                        "type": "object",
+                        "properties": {
+                            "type": {
+                                "type": "string",
+                                "enum": [
+                                    "chromium",
+                                    "firefox"
+                                ],
+                                "default": "chromium"
+                            },
+                            "headless": {
+                                "type": "boolean",
+                                "default": true
+                            }
+                        }
+                    },
+                    "authentication": {
+                        "type": "object",
+                        "properties": {
+                            "enabled": {
+                                "type": "boolean"
+                            },
+                            "loginUrl": {
+                                "type": "string"
+                            },
+                            "username": {
+                                "type": "string"
+                            },
+                            "password": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "evidence": {
+                        "type": "object",
+                        "properties": {
+                            "capture_screenshots": {
+                                "type": "boolean",
+                                "default": true
+                            },
+                            "capture_network": {
+                                "type": "boolean",
+                                "default": false
+                            }
+                        }
+                    }
+                }
+            },
+            "testCases": {
+                "type": "array",
+                "description": "A list of test cases to execute.",
+                "items": {
+                    "type": "object",
+                    "required": [
+                        "id",
+                        "title",
+                        "steps"
+                    ],
+                    "properties": {
+                        "id": {
+                            "type": "string",
+                            "description": "Unique identifier for the test case (e.g., TC-001)."
+                        },
+                        "title": {
+                            "type": "string",
+                            "description": "A brief title describing the test case."
+                        },
+                        "steps": {
+                            "type": "array",
+                            "description": "Sequential list of steps to execute. Use natural language commands like 'Click Login', 'Type user@example.com into Email', 'Verify text Welcome'.",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "required": [
+            "url",
+            "testCases"
+        ]
+    }
+}
