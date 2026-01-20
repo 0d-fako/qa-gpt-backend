@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: qa-gpt-playwright
+    env: docker
+    plan: free
+    region: oregon
+    branch: main
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: MONGODB_URI
+        sync: false
