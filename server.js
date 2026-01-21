@@ -227,7 +227,9 @@ app.delete('/api/runs/:runId', async (req, res) => {
 // Real Playwright execution (same as before)
 async function executeTests(testCases, config, url) {
   const browserType = config?.browser?.type === 'firefox' ? firefox : chromium;
-  const headless = config?.browser?.headless !== false;
+  // Force headless mode in production/docker to avoid "Missing X server" errors
+  const headless = true;
+  // const headless = config?.browser?.headless !== false; // OLD LOGIC
 
   console.log(`[PLAYWRIGHT] Launching ${browserType.name()} browser (headless: ${headless})`);
 
