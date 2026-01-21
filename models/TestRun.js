@@ -6,7 +6,7 @@ const TestStepSchema = new mongoose.Schema({
   status: { type: String, enum: ['PASS', 'FAIL', 'PENDING'] },
   timestamp: Date,
   durationMs: Number,
-  screenshot: String, 
+  screenshot: String,
   log: String,
   error: String,
   locator: String,
@@ -36,27 +36,19 @@ const TestCaseResultSchema = new mongoose.Schema({
 const TestRunSchema = new mongoose.Schema({
   // Metadata
   runId: { type: String, required: true, unique: true },
-  projectId: String, 
+  projectId: String,
   userId: String,
-  
+
   // Configuration
   url: { type: String, required: true },
   config: {
-    executionMode: String,
-    browser: {
-      type: String,
-      headless: Boolean
-    },
-    authentication: {
-      enabled: Boolean,
-      username: String
-      // Don't store password!
-    }
+    type: mongoose.Schema.Types.Mixed,
+    default: {}
   },
-  
+
   // Results
   testCases: [TestCaseResultSchema],
-  
+
   // Summary
   summary: {
     total: Number,
@@ -65,18 +57,18 @@ const TestRunSchema = new mongoose.Schema({
     pending: Number,
     duration: Number // Total execution time in ms
   },
-  
+
   // Timestamps
   startedAt: { type: Date, required: true },
   completedAt: Date,
-  
+
   // Status
-  status: { 
-    type: String, 
+  status: {
+    type: String,
     enum: ['RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED'],
     default: 'RUNNING'
   },
-  
+
   // Error info if run failed
   error: String
 }, {
