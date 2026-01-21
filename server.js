@@ -34,7 +34,7 @@ app.get('/health', async (req, res) => {
 });
 
 // Execute tests and save to database
-app.post('/api/execute', async (req, res) => {
+app.post(['/api/execute', '/execute'], async (req, res) => {
   const { testCases, config, url, userId, projectId } = req.body;
 
   if (!testCases || !url) {
