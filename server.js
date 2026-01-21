@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3000;
 const MONGODB_URI = process.env.MONGODB_URI;
 
 // Middleware
-app.use(cors());
+app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '50mb' }));
 
 // Connect to MongoDB
@@ -226,27 +226,30 @@ app.delete('/api/runs/:runId', async (req, res) => {
 
 // Real Playwright execution (same as before)
 async function executeTests(testCases, config, url) {
-  const browserType = config?.browser?.type === 'firefox' ? firefox : chromium;
-  // Force headless mode in production/docker to avoid "Missing X server" errors
-  const headless = true;
-  // const headless = config?.browser?.headless !== false; // OLD LOGIC
-
-  console.log(`[PLAYWRIGHT] Launching ${browserType.name()} browser (headless: ${headless})`);
-
-  const browser = await browserType.launch({
-    headless,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-
-  const context = await browser.newContext({
-    viewport: { width: 1920, height: 1080 },
-    userAgent: 'QA-GPT/2.0 Playwright Agent'
-  });
-
-  const page = await context.newPage();
+  let browser;
+  let context;
   const results = [];
 
   try {
+    const browserType = config?.browser?.type === 'firefox' ? firefox : chromium;
+    // Force headless mode in production/docker to avoid "Missing X server" errors
+    const headless = true;
+    // const headless = config?.browser?.headless !== false; // OLD LOGIC
+
+    console.log(`[PLAYWRIGHT] Launching ${browserType.name()} browser (headless: ${headless})`);
+
+    browser = await browserType.launch({
+      headless,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
+    context = await browser.newContext({
+      viewport: { width: 1920, height: 1080 },
+      userAgent: 'QA-GPT/2.0 Playwright Agent'
+    });
+
+    const page = await context.newPage();
+
     if (config?.authentication?.enabled && config.authentication.loginUrl) {
       console.log('[AUTH] Performing login...');
       await performLogin(page, config.authentication);
@@ -264,8 +267,8 @@ async function executeTests(testCases, config, url) {
     console.error('[ERROR] Test execution failed:', error);
     throw error;
   } finally {
-    await context.close();
-    await browser.close();
+    if (context) await context.close().catch(() => { });
+    if (browser) await browser.close().catch(() => { });
     console.log('[PLAYWRIGHT] Browser closed');
   }
 
