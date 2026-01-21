@@ -1,6 +1,6 @@
 # Use the official Playwright image which comes with all necessary browsers and dependencies installed.
 # Using jammy (Ubuntu 22.04) as the base.
-FROM mcr.microsoft.com/playwright:v1.40.0-jammy
+FROM mcr.microsoft.com/playwright:v1.57.0-jammy
 
 # Set the working directory in the container
 WORKDIR /app
