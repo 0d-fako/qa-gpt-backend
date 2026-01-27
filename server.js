@@ -1,5 +1,6 @@
 // server.js - Playwright Backend with MongoDB
 const express = require('express');
+require('dotenv').config();
 const cors = require('cors');
 const mongoose = require('mongoose');
 const { chromium, firefox } = require('playwright');
@@ -393,6 +394,18 @@ async function executeTestCase(page, tc, config) {
             step.error = error.message;
             step.durationMs = Date.now() - stepStart;
             console.error(`[STEP ${i + 1}] ✗ FAIL:`, error.message);
+
+            if (config?.evidence?.capture_screenshots) {
+              try {
+                const screenshot = await page.screenshot({
+                  fullPage: true,
+                  type: 'png'
+                });
+                step.screenshot = `data:image/png;base64,${screenshot.toString('base64')}`;
+              } catch (e) {
+                console.error('[SCREENSHOT] Failed to capture failure screenshot:', e);
+              }
+            }
 
             // Abort remaining steps on failure
             executedSteps.push(step);
