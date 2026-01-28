@@ -374,9 +374,10 @@ async function executeTestCase(page, tc, config) {
             if (config?.evidence?.capture_screenshots) {
               const screenshot = await page.screenshot({
                 fullPage: true,
-                type: 'png'
+                type: 'jpeg',
+                quality: 50
               });
-              step.screenshot = `data:image/png;base64,${screenshot.toString('base64')}`;
+              step.screenshot = `data:image/jpeg;base64,${screenshot.toString('base64')}`;
             }
 
             step.status = 'PASS';
@@ -399,9 +400,10 @@ async function executeTestCase(page, tc, config) {
               try {
                 const screenshot = await page.screenshot({
                   fullPage: true,
-                  type: 'png'
+                  type: 'jpeg',
+                  quality: 50
                 });
-                step.screenshot = `data:image/png;base64,${screenshot.toString('base64')}`;
+                step.screenshot = `data:image/jpeg;base64,${screenshot.toString('base64')}`;
               } catch (e) {
                 console.error('[SCREENSHOT] Failed to capture failure screenshot:', e);
               }

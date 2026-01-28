@@ -74,10 +74,20 @@ setTimeout(async () => {
             data.results.forEach(result => {
                 result.executedSteps.forEach((step, index) => {
                     if (step.screenshot) {
-                        const base64Data = step.screenshot.replace(/^data:image\/png;base64,/, "");
-                        const filename = `${result.id}_step${index + 1}_${step.status}.png`;
+                        let ext = 'png';
+                        let data = step.screenshot;
+
+                        // Detect and process different image types
+                        if (step.screenshot.startsWith('data:image/jpeg')) {
+                            ext = 'jpg';
+                            data = step.screenshot.replace(/^data:image\/jpeg;base64,/, "");
+                        } else {
+                            data = step.screenshot.replace(/^data:image\/png;base64,/, "");
+                        }
+
+                        const filename = `${result.id}_step${index + 1}_${step.status}.${ext}`;
                         const filePath = path.join(screenshotsDir, filename);
-                        fs.writeFileSync(filePath, base64Data, 'base64');
+                        fs.writeFileSync(filePath, data, 'base64');
                         console.log(`Saved screenshot: ${filename}`);
                     }
                 });
@@ -90,4 +100,4 @@ setTimeout(async () => {
         console.log('--- Test Complete, Exiting ---');
         process.exit(0);
     }
-}, 2000); // Wait 2 seconds for MongoDB connection and server start
+}, 5000); // Wait 5 seconds for MongoDB connection and server start
