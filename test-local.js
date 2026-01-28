@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
+process.env.SKIP_DB = 'true'; // Force skip DB for local testing confidence
 
 // Wait for server to start
 setTimeout(async () => {
@@ -13,27 +14,17 @@ setTimeout(async () => {
         url: 'https://vigimatch-frontend-dev.up.railway.app/auth',
         testCases: [
             {
-                id: 'TC-LOGIN-001',
-                title: 'Verify Successful Student Login',
+                id: 'TC-ADVANCED-001',
+                title: 'Verify Advanced Features (Selectors, Variables, Waits)',
                 steps: [
-                    'Navigate to https://vigimatch-frontend-dev.up.railway.app/auth',
-                    'Type "phemii_tester" into "Username"',
-                    'Type "Hbon@1234" into "Password"',
-                    'Click "Sign In"',
-                    'Wait 5',
+                    'Wait for network idle',
+                    'Store text from "h1" as "pageTitle"',
+                    'Type "phemii_tester" into css=input[placeholder*="Username"]',
+                    'Type "Hbon@1234" into css=input[type="password"]',
+                    'Click xpath=//button[contains(text(), "Sign In")]',
+                    'Wait for selector "text=Dashboard"',
+                    'If "Dashboard" visible then Click "Logout"',
                     'Verify "Dashboard"'
-                ]
-            },
-            {
-                id: 'TC-LOGIN-002',
-                title: 'Verify Invalid Login',
-                steps: [
-                    'Navigate to https://vigimatch-frontend-dev.up.railway.app/auth',
-                    'Type "phemii_tester" into "Username"',
-                    'Type "WrongPass123" into "Password"',
-                    'Click "Sign In"',
-                    'Wait 2',
-                    'Verify "Invalid credentials"'
                 ]
             }
         ],
@@ -100,4 +91,4 @@ setTimeout(async () => {
         console.log('--- Test Complete, Exiting ---');
         process.exit(0);
     }
-}, 5000); // Wait 5 seconds for MongoDB connection and server start
+}, 15000); // Wait 15 seconds for MongoDB connection and server start

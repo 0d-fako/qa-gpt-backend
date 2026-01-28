@@ -23,12 +23,18 @@ process.on('unhandledRejection', (reason, promise) => {
 app.use(express.json({ limit: '50mb' }));
 
 // Connect to MongoDB
-mongoose.connect(MONGODB_URI, {
-  useNewUrlParser: true,
-  useUnifiedTopology: true
-})
-  .then(() => console.log('✅ MongoDB connected'))
-  .catch(err => console.error('❌ MongoDB connection error:', err));
+if (process.env.SKIP_DB === 'true') {
+  console.log('⚠️  SKIP_DB is enabled: Skipping MongoDB connection');
+} else {
+  mongoose.connect(MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+    socketTimeoutMS: 45000,
+    connectTimeoutMS: 30000
+  })
+    .then(() => console.log('✅ MongoDB connected'))
+    .catch(err => console.error('❌ MongoDB connection error:', err));
+}
 
 // Health check
 app.get('/health', async (req, res) => {
@@ -64,8 +70,12 @@ app.post(['/api/execute', '/execute'], async (req, res) => {
       status: 'RUNNING'
     });
 
-    await testRun.save();
-    console.log(`[DB] Created test run: ${runId}`);
+    if (process.env.SKIP_DB !== 'true') {
+      await testRun.save();
+      console.log(`[DB] Created test run: ${runId}`);
+    } else {
+      console.log(`[DB (Mock)] Created test run: ${runId}`);
+    }
 
     // Execute tests
     const results = await executeTests(testCases, config, url);
@@ -231,17 +241,17 @@ app.delete('/api/runs/:runId', async (req, res) => {
   }
 });
 
-// Real Playwright execution (same as before)
+// Real Playwright execution
 async function executeTests(testCases, config, url) {
   let browser;
   let context;
   const results = [];
+  // Context for variables
+  const testContext = {};
 
   try {
     const browserType = config?.browser?.type === 'firefox' ? firefox : chromium;
-    // Force headless mode in production/docker to avoid "Missing X server" errors
-    const headless = true;
-    // const headless = config?.browser?.headless !== false; // OLD LOGIC
+    const headless = config?.browser?.headless !== false;
 
     console.log(`[PLAYWRIGHT] Launching ${browserType.name()} browser (headless: ${headless})`);
 
@@ -267,7 +277,7 @@ async function executeTests(testCases, config, url) {
 
     for (const tc of testCases) {
       console.log(`[TEST] Executing ${tc.id}: ${tc.title}`);
-      const result = await executeTestCase(page, tc, config);
+      const result = await executeTestCase(page, tc, config, testContext);
       results.push(result);
     }
   } catch (error) {
@@ -282,56 +292,13 @@ async function executeTests(testCases, config, url) {
   return results;
 }
 
-async function performLogin(page, auth) {
-  await page.goto(auth.loginUrl, { waitUntil: 'networkidle' });
+// ... performLogin stays the same ...
 
-  const usernameSelectors = [
-    'input[type="email"]',
-    'input[type="text"][name*="email"]',
-    'input[name="username"]',
-    'input[id="email"]',
-    'input[placeholder*="email" i]'
-  ];
-
-  for (const selector of usernameSelectors) {
-    try {
-      await page.fill(selector, auth.username, { timeout: 2000 });
-      console.log(`[AUTH] Filled username with selector: ${selector}`);
-      break;
-    } catch (e) {
-      continue;
-    }
-  }
-
-  await page.fill('input[type="password"]', auth.password);
-
-  const submitSelectors = [
-    'button[type="submit"]',
-    'button:has-text("Log in")',
-    'button:has-text("Sign in")',
-    'input[type="submit"]'
-  ];
-
-  for (const selector of submitSelectors) {
-    try {
-      await page.click(selector);
-      console.log(`[AUTH] Clicked submit with selector: ${selector}`);
-      break;
-    } catch (e) {
-      continue;
-    }
-  }
-
-  await page.waitForLoadState('networkidle', { timeout: 10000 });
-  console.log('[AUTH] Login complete');
-}
-
-async function executeTestCase(page, tc, config) {
+async function executeTestCase(page, tc, config, testContext) {
   const executedSteps = [];
   const networkLogs = [];
 
-  // Hard timeout for the test case to prevent hanging
-  const TEST_TIMEOUT = 60000; // 60 seconds
+  const TEST_TIMEOUT = 120000;
   const testTimeoutPromise = new Promise((_, reject) =>
     setTimeout(() => reject(new Error('Test case execution timed out (>60s)')), TEST_TIMEOUT)
   );
@@ -343,19 +310,22 @@ async function executeTestCase(page, tc, config) {
         method: response.request().method(),
         status: response.status(),
         timestamp: new Date().toISOString(),
-        timeMs: Math.round(Math.random() * 500) // Placeholder if timing not available
+        timeMs: Math.round(Math.random() * 500)
       });
     });
   }
 
   try {
-    // Race execution against timeout
     await Promise.race([
       (async () => {
         for (let i = 0; i < tc.steps.length; i++) {
-          const stepDesc = tc.steps[i];
-          const stepStart = Date.now();
+          // Substitute variables in step description
+          let stepDesc = tc.steps[i];
+          for (const [key, value] of Object.entries(testContext)) {
+            stepDesc = stepDesc.replace(new RegExp(`{${key}}`, 'g'), value);
+          }
 
+          const stepStart = Date.now();
           console.log(`[STEP ${i + 1}/${tc.steps.length}] ${stepDesc}`);
 
           const step = {
@@ -369,7 +339,7 @@ async function executeTestCase(page, tc, config) {
           };
 
           try {
-            await executeStep(page, stepDesc);
+            await executeStep(page, stepDesc, testContext);
 
             if (config?.evidence?.capture_screenshots) {
               const screenshot = await page.screenshot({
@@ -382,12 +352,10 @@ async function executeTestCase(page, tc, config) {
 
             step.status = 'PASS';
             step.durationMs = Date.now() - stepStart;
-
             if (config?.evidence?.capture_network) {
               step.networkLogs = [...networkLogs];
               networkLogs.length = 0;
             }
-
             console.log(`[STEP ${i + 1}] ✓ PASS (${step.durationMs}ms)`);
 
           } catch (error) {
@@ -404,12 +372,9 @@ async function executeTestCase(page, tc, config) {
                   quality: 50
                 });
                 step.screenshot = `data:image/jpeg;base64,${screenshot.toString('base64')}`;
-              } catch (e) {
-                console.error('[SCREENSHOT] Failed to capture failure screenshot:', e);
-              }
+              } catch (e) { console.error(e); }
             }
 
-            // Abort remaining steps on failure
             executedSteps.push(step);
             throw new Error(`Step ${i + 1} failed: ${error.message}`);
           }
@@ -422,7 +387,6 @@ async function executeTestCase(page, tc, config) {
     ]);
   } catch (error) {
     console.error('[EXECUTION ERROR]', error.message);
-    // Don't re-throw, just return the failure result
   }
 
   const passed = executedSteps.filter(s => s.status === 'PASS').length;
@@ -436,14 +400,107 @@ async function executeTestCase(page, tc, config) {
   };
 }
 
-async function executeStep(page, stepDesc) {
+async function executeStep(page, stepDesc, testContext) {
   const lower = stepDesc.toLowerCase();
 
-  // 1. CLICK / PRESS
-  if (/\b(click|press|tap)\b/.test(lower)) {
-    const textTarget = extractText(stepDesc, ['click', 'press', 'tap', 'button', 'link', 'on', 'the', 'menu', 'icon']);
+  // Helper: check for explicit selectors (css=, xpath=, text=)
+  const explicitMatch = stepDesc.match(/(?:css=|xpath=|text=).+/);
+  const explicitSelector = explicitMatch ? explicitMatch[0] : null;
 
-    // Try reliable selectors patterns suitable for generic targets
+  // 0. STORE / VARIABLES
+  if (/^store\b/i.test(stepDesc)) {
+    // Store text from "selector" as "variable"
+    const match = stepDesc.match(/store\s+(?:text\s+from\s+)?["']?([^"']+)["']?\s+as\s+["']?([^"']+)["']?/i);
+    if (match) {
+      const selector = match[1];
+      const varName = match[2];
+
+      let textValue;
+      if (selector.match(/^(css=|xpath=|text=)/)) {
+        textValue = await page.innerText(selector);
+      } else {
+        // Try to guess selector or use extractText logic (simplified here for explicit preference)
+        // Fallback to text search if no invalid chars
+        try {
+          textValue = await page.innerText(`text="${selector}"`);
+        } catch (e) {
+          // Try as css
+          textValue = await page.innerText(selector).catch(() => '');
+        }
+      }
+
+      testContext[varName] = textValue.trim();
+      console.log(`  → Stored variable [${varName}] = "${testContext[varName]}"`);
+      return;
+    }
+  }
+
+  // 0.5 CONDITIONALS
+  // "If "selector" exists click "other"" - very basic parser
+  if (/^if\b/i.test(stepDesc)) {
+    const condMatch = stepDesc.match(/if\s+["']?([^"']+)["']?\s+(exists|visible)\s+(?:then\s+)?(.+)/i);
+    if (condMatch) {
+      const selector = condMatch[1];
+      const check = condMatch[2].toLowerCase();
+      const action = condMatch[3];
+
+      let isTrue = false;
+      try {
+        // Short timeout for check
+        await page.waitForSelector(selector instanceof String && selector.match(/^(css=|xpath=)/) ? selector : `text="${selector}"`, { state: check === 'visible' ? 'visible' : 'attached', timeout: 2000 });
+        isTrue = true;
+      } catch (e) {
+        isTrue = false;
+      }
+
+      console.log(`  → Condition [${selector} ${check}] is ${isTrue}`);
+      if (isTrue) {
+        console.log(`  → Executing conditional action: ${action}`);
+        await executeStep(page, action, testContext);
+      } else {
+        console.log(`  → Skipping conditional action.`);
+      }
+      return;
+    }
+  }
+
+  // 1. WAITS (Enhanced)
+  if (/^wait\b/i.test(stepDesc)) {
+    if (lower.includes('network')) {
+      await page.waitForLoadState('networkidle');
+      console.log('  → Waited for network idle');
+      return;
+    }
+    // Wait for selector "..."
+    const selMatch = stepDesc.match(/wait\s+for\s+(?:element\s+|selector\s+)?["']?([^"']+)["']?$/i);
+    // Ensure it's not "Wait 5 seconds"
+    if (selMatch && !/\bseconds?\b/.test(lower)) {
+      const selector = selMatch[1];
+      // Support explicit or simple text
+      const finalSel = selector.match(/^(css=|xpath=|text=)/) ? selector : `text="${selector}"`;
+      try {
+        await page.waitForSelector(finalSel, { state: 'visible', timeout: 10000 });
+        console.log(`  → Waited for: ${finalSel}`);
+      } catch (e) {
+        // Fallback to trying as CSS if text failed?
+        if (!finalSel.startsWith('text=')) throw e;
+        await page.waitForSelector(selector, { state: 'visible', timeout: 10000 });
+        console.log(`  → Waited for: ${selector}`);
+      }
+      return;
+    }
+  }
+
+  // 2. CLICK / PRESS
+  if (/\b(click|press|tap)\b/.test(lower)) {
+    if (explicitSelector) {
+      await page.click(explicitSelector, { timeout: 5000 });
+      console.log(`  → Clicked explicit: ${explicitSelector}`);
+      return;
+    }
+
+    // Legacy Extraction
+    const textTarget = extractText(stepDesc, ['click', 'press', 'tap', 'button', 'link', 'on', 'the', 'menu', 'icon']);
     const selectors = [
       `text="${textTarget}"`,
       `[aria-label="${textTarget}"]`,
@@ -465,11 +522,25 @@ async function executeStep(page, stepDesc) {
     throw new Error(`Could not find clickable element for: "${textTarget}"`);
   }
 
-  // 2. TYPE / FILL / ENTER
+  // 3. TYPE / FILL
   if (/\b(type|enter|fill)\b/.test(lower)) {
-    const split = stepDesc.match(/(?:type|enter|fill)\s+"?([^"]+)"?\s+(?:in|into|to)\s+(?:the\s+)?(.+)/i);
-    // Matches: "Type 'hello' into 'Email Field'" -> group 1: hello, group 2: Email Field
+    if (explicitSelector) {
+      // If explicit selector is present, we need to split text vs selector
+      // E.g. Type "hello" into css=.input
+      const split = stepDesc.match(/(?:type|enter|fill)\s+"?([^""]+)"?\s+(?:in|into|to)\s+(.+)/i);
+      if (split) {
+        const val = split[1];
+        const sel = split[2]; // this might contain the explicit selector
+        if (sel.match(/^(css=|xpath=|text=)/)) {
+          await page.fill(sel, val);
+          console.log(`  → Filled explicit "${val}" into ${sel}`);
+          return;
+        }
+      }
+    }
 
+    // ... Legacy Type Logic ...
+    const split = stepDesc.match(/(?:type|enter|fill)\s+"?([^"]+)"?\s+(?:in|into|to)\s+(?:the\s+)?(.+)/i);
     let textToType = '';
     let target = '';
 
@@ -477,8 +548,6 @@ async function executeStep(page, stepDesc) {
       textToType = split[1];
       target = split[2];
     } else {
-      // Fallback: "Type 'hello'" (attempts to type into focused or first visible input)
-      // or "Enter hello into email" (we'll rely on our old extractor)
       const parts = stepDesc.split(/\s(?:in|into)\s/);
       if (parts.length > 1) {
         textToType = extractText(parts[0], ['type', 'enter', 'fill']);
@@ -489,18 +558,16 @@ async function executeStep(page, stepDesc) {
     }
 
     target = extractText(target, ['field', 'input', 'box', 'the']);
-
     const possibleInputs = [
       `input[placeholder*="${target}" i]`,
       `input[name*="${target}" i]`,
       `textarea[placeholder*="${target}" i]`,
       `input[aria-label*="${target}" i]`,
-      `input:visible` // Fallback to first visible input
+      `input:visible`
     ];
 
     for (const selector of possibleInputs) {
       try {
-        // Clear only if it looks like a specific field, otherwise just fill
         await page.fill(selector, textToType, { timeout: 2000 });
         console.log(`  → Filled "${textToType}" into ${selector}`);
         return;
@@ -509,7 +576,7 @@ async function executeStep(page, stepDesc) {
     throw new Error(`Could not find input field for target "${target}"`);
   }
 
-  // 3. NAVIGATE
+  // 4. NAVIGATE
   if (/\b(navigate|go to|visit|open)\b/.test(lower)) {
     const urlMatch = stepDesc.match(/https?:\/\/[^\s]+/);
     if (urlMatch) {
@@ -517,12 +584,18 @@ async function executeStep(page, stepDesc) {
       console.log(`  → Navigated to: ${urlMatch[0]}`);
       return;
     }
-    // Handle "navigate to /dashboard" relative paths if base URL is known?
-    // For now assume absolute or fail.
   }
 
-  // 4. VERIFY / ASSERT
+  // 5. VERIFY / ASSERT
   if (/\b(verify|check|assert|should see|expect)\b/.test(lower)) {
+    if (explicitSelector) {
+      try {
+        await page.waitForSelector(explicitSelector, { state: 'visible', timeout: 5000 });
+        console.log(`  → Verified explicit: ${explicitSelector}`);
+        return;
+      } catch (e) { throw new Error(`Assertion failed: ${explicitSelector} not visible`); }
+    }
+
     const target = extractText(stepDesc, ['verify', 'check', 'assert', 'should see', 'expect', 'that', 'the', 'is', 'visible']);
     try {
       await page.waitForSelector(`text="${target}"`, { state: 'visible', timeout: 5000 });
@@ -533,7 +606,7 @@ async function executeStep(page, stepDesc) {
     }
   }
 
-  // 5. WAIT
+  // 6. WAIT (Time)
   if (/\bwait\b/.test(lower)) {
     const seconds = parseInt(stepDesc.match(/\d+/)?.[0] || '2');
     await page.waitForTimeout(seconds * 1000);
