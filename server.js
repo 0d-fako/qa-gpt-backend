@@ -400,32 +400,55 @@ async function executeTestCase(page, tc, config, testContext) {
   };
 }
 
+// ============================================================================
+// FIXED executeStep function for server.js
+// Replace your existing executeStep function (around line 318) with this
+// ============================================================================
+
 async function executeStep(page, stepDesc, testContext) {
   const lower = stepDesc.toLowerCase();
 
-  // Helper: check for explicit selectors (css=, xpath=, text=)
-  const explicitMatch = stepDesc.match(/(?:css=|xpath=|text=).+/);
-  const explicitSelector = explicitMatch ? explicitMatch[0] : null;
 
+  function extractQuoted(str, index = 0) {
+    const matches = str.match(/['"]([^'"]+)['"]/g);
+    if (matches && matches[index]) {
+      return matches[index].replace(/['"]/g, '');
+    }
+    return '';
+  }
+
+  /**
+   * Check if a string looks like a CSS selector
+   */
+  function isCSSSelector(text) {
+    return /^[a-z]+\[|^\[|^#|^\.|^>|^[a-z]+:/i.test(text);
+  }
+
+  /**
+   * Check if it's a Playwright text selector
+   */
+  function isTextSelector(text) {
+    return text.startsWith('text=') || text.startsWith('text="');
+  }
+
+  // ============================================================================
   // 0. STORE / VARIABLES
+  // ============================================================================
+  
   if (/^store\b/i.test(stepDesc)) {
-    // Store text from "selector" as "variable"
     const match = stepDesc.match(/store\s+(?:text\s+from\s+)?["']?([^"']+)["']?\s+as\s+["']?([^"']+)["']?/i);
     if (match) {
       const selector = match[1];
       const varName = match[2];
 
       let textValue;
-      if (selector.match(/^(css=|xpath=|text=)/)) {
-        textValue = await page.innerText(selector);
+      if (isCSSSelector(selector) || isTextSelector(selector)) {
+        textValue = await page.textContent(selector);
       } else {
-        // Try to guess selector or use extractText logic (simplified here for explicit preference)
-        // Fallback to text search if no invalid chars
         try {
-          textValue = await page.innerText(`text="${selector}"`);
+          textValue = await page.textContent(`text="${selector}"`);
         } catch (e) {
-          // Try as css
-          textValue = await page.innerText(selector).catch(() => '');
+          textValue = await page.textContent(selector);
         }
       }
 
@@ -435,8 +458,10 @@ async function executeStep(page, stepDesc, testContext) {
     }
   }
 
+  // ============================================================================
   // 0.5 CONDITIONALS
-  // "If "selector" exists click "other"" - very basic parser
+  // ============================================================================
+  
   if (/^if\b/i.test(stepDesc)) {
     const condMatch = stepDesc.match(/if\s+["']?([^"']+)["']?\s+(exists|visible)\s+(?:then\s+)?(.+)/i);
     if (condMatch) {
@@ -446,8 +471,11 @@ async function executeStep(page, stepDesc, testContext) {
 
       let isTrue = false;
       try {
-        // Short timeout for check
-        await page.waitForSelector(selector instanceof String && selector.match(/^(css=|xpath=)/) ? selector : `text="${selector}"`, { state: check === 'visible' ? 'visible' : 'attached', timeout: 2000 });
+        const finalSelector = isCSSSelector(selector) ? selector : `text="${selector}"`;
+        await page.waitForSelector(finalSelector, { 
+          state: check === 'visible' ? 'visible' : 'attached', 
+          timeout: 2000 
+        });
         isTrue = true;
       } catch (e) {
         isTrue = false;
@@ -464,159 +492,318 @@ async function executeStep(page, stepDesc, testContext) {
     }
   }
 
-  // 1. WAITS (Enhanced)
-  if (/^wait\b/i.test(stepDesc)) {
-    if (lower.includes('network')) {
-      await page.waitForLoadState('networkidle');
-      console.log('  → Waited for network idle');
-      return;
-    }
-    // Wait for selector "..."
-    const selMatch = stepDesc.match(/wait\s+for\s+(?:element\s+|selector\s+)?["']?([^"']+)["']?$/i);
-    // Ensure it's not "Wait 5 seconds"
-    if (selMatch && !/\bseconds?\b/.test(lower)) {
-      const selector = selMatch[1];
-      // Support explicit or simple text
-      const finalSel = selector.match(/^(css=|xpath=|text=)/) ? selector : `text="${selector}"`;
-      try {
-        await page.waitForSelector(finalSel, { state: 'visible', timeout: 10000 });
-        console.log(`  → Waited for: ${finalSel}`);
-      } catch (e) {
-        // Fallback to trying as CSS if text failed?
-        if (!finalSel.startsWith('text=')) throw e;
-        await page.waitForSelector(selector, { state: 'visible', timeout: 10000 });
-        console.log(`  → Waited for: ${selector}`);
-      }
-      return;
-    }
-  }
-
-  // 2. CLICK / PRESS
-  if (/\b(click|press|tap)\b/.test(lower)) {
-    if (explicitSelector) {
-      await page.click(explicitSelector, { timeout: 5000 });
-      console.log(`  → Clicked explicit: ${explicitSelector}`);
-      return;
-    }
-
-    // Legacy Extraction
-    const textTarget = extractText(stepDesc, ['click', 'press', 'tap', 'button', 'link', 'on', 'the', 'menu', 'icon']);
-    const selectors = [
-      `text="${textTarget}"`,
-      `[aria-label="${textTarget}"]`,
-      `button:has-text("${textTarget}")`,
-      `a:has-text("${textTarget}")`,
-      `[role="button"]:has-text("${textTarget}")`,
-      `input[type="submit"][value="${textTarget}"]`,
-      `#${textTarget}`,
-      `.${textTarget}`
-    ];
-
-    for (const selector of selectors) {
-      try {
-        await page.click(selector, { timeout: 2000 });
-        console.log(`  → Clicked: ${selector}`);
-        return;
-      } catch (e) { /* continue */ }
-    }
-    throw new Error(`Could not find clickable element for: "${textTarget}"`);
-  }
-
-  // 3. TYPE / FILL
-  if (/\b(type|enter|fill)\b/.test(lower)) {
-    if (explicitSelector) {
-      // If explicit selector is present, we need to split text vs selector
-      // E.g. Type "hello" into css=.input
-      const split = stepDesc.match(/(?:type|enter|fill)\s+"?([^""]+)"?\s+(?:in|into|to)\s+(.+)/i);
-      if (split) {
-        const val = split[1];
-        const sel = split[2]; // this might contain the explicit selector
-        if (sel.match(/^(css=|xpath=|text=)/)) {
-          await page.fill(sel, val);
-          console.log(`  → Filled explicit "${val}" into ${sel}`);
-          return;
-        }
-      }
-    }
-
-    // ... Legacy Type Logic ...
-    const split = stepDesc.match(/(?:type|enter|fill)\s+"?([^"]+)"?\s+(?:in|into|to)\s+(?:the\s+)?(.+)/i);
-    let textToType = '';
-    let target = '';
-
-    if (split) {
-      textToType = split[1];
-      target = split[2];
-    } else {
-      const parts = stepDesc.split(/\s(?:in|into)\s/);
-      if (parts.length > 1) {
-        textToType = extractText(parts[0], ['type', 'enter', 'fill']);
-        target = parts[1];
-      } else {
-        textToType = extractText(stepDesc, ['type', 'enter', 'fill', 'input']);
-      }
-    }
-
-    target = extractText(target, ['field', 'input', 'box', 'the']);
-    const possibleInputs = [
-      `input[placeholder*="${target}" i]`,
-      `input[name*="${target}" i]`,
-      `textarea[placeholder*="${target}" i]`,
-      `input[aria-label*="${target}" i]`,
-      `input:visible`
-    ];
-
-    for (const selector of possibleInputs) {
-      try {
-        await page.fill(selector, textToType, { timeout: 2000 });
-        console.log(`  → Filled "${textToType}" into ${selector}`);
-        return;
-      } catch (e) { /* continue */ }
-    }
-    throw new Error(`Could not find input field for target "${target}"`);
-  }
-
-  // 4. NAVIGATE
+  // ============================================================================
+  // 1. NAVIGATION
+  // ============================================================================
+  
   if (/\b(navigate|go to|visit|open)\b/.test(lower)) {
-    const urlMatch = stepDesc.match(/https?:\/\/[^\s]+/);
+    // First check for full URLs
+    const urlMatch = stepDesc.match(/https?:\/\/[^\s'"]+/);
     if (urlMatch) {
-      await page.goto(urlMatch[0], { waitUntil: 'networkidle', timeout: 30000 });
+      await page.goto(urlMatch[0], { waitUntil: 'domcontentloaded', timeout: 30000 });
       console.log(`  → Navigated to: ${urlMatch[0]}`);
       return;
     }
-  }
-
-  // 5. VERIFY / ASSERT
-  if (/\b(verify|check|assert|should see|expect)\b/.test(lower)) {
-    if (explicitSelector) {
-      try {
-        await page.waitForSelector(explicitSelector, { state: 'visible', timeout: 5000 });
-        console.log(`  → Verified explicit: ${explicitSelector}`);
-        return;
-      } catch (e) { throw new Error(`Assertion failed: ${explicitSelector} not visible`); }
-    }
-
-    const target = extractText(stepDesc, ['verify', 'check', 'assert', 'should see', 'expect', 'that', 'the', 'is', 'visible']);
-    try {
-      await page.waitForSelector(`text="${target}"`, { state: 'visible', timeout: 5000 });
-      console.log(`  → Verified visibility of: "${target}"`);
+    
+    // Then handle paths (with or without quotes)
+    const pathMatch = stepDesc.match(/(?:navigate|go)\s+to\s+['"]?([^'"]+?)['"]?$/i);
+    if (pathMatch) {
+      const path = pathMatch[1].trim();
+      // Note: The base URL is already set when page.goto was called initially
+      // For paths, we navigate relative to current origin
+      const currentUrl = new URL(page.url());
+      const fullUrl = path.startsWith('http') ? path : `${currentUrl.origin}${path}`;
+      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      console.log(`  → Navigated to: ${fullUrl}`);
       return;
-    } catch (e) {
-      throw new Error(`Assertion failed: Could not avail text "${target}"`);
     }
   }
 
-  // 6. WAIT (Time)
-  if (/\bwait\b/.test(lower)) {
-    const seconds = parseInt(stepDesc.match(/\d+/)?.[0] || '2');
-    await page.waitForTimeout(seconds * 1000);
-    console.log(`  → Waited ${seconds}s`);
+  // ============================================================================
+  // 2. WAIT CONDITIONS
+  // ============================================================================
+  
+  if (/^wait\b/i.test(stepDesc)) {
+    // Wait for network idle
+    if (lower.includes('network')) {
+      await page.waitForLoadState('networkidle', { timeout: 30000 });
+      console.log('  → Waited for network idle');
+      return;
+    }
+    
+    // Wait for selector to appear
+    const appearMatch = stepDesc.match(/wait\s+for\s+['"]([^'"]+)['"]\s+to\s+appear/i);
+    if (appearMatch) {
+      const selector = appearMatch[1];
+      await page.waitForSelector(selector, { state: 'visible', timeout: 15000 });
+      console.log(`  → Waited for ${selector} to appear`);
+      return;
+    }
+    
+    // Wait for selector to disappear
+    const disappearMatch = stepDesc.match(/wait\s+for\s+['"]([^'"]+)['"]\s+to\s+disappear/i);
+    if (disappearMatch) {
+      const selector = disappearMatch[1];
+      await page.waitForSelector(selector, { state: 'hidden', timeout: 15000 });
+      console.log(`  → Waited for ${selector} to disappear`);
+      return;
+    }
+    
+    // Wait for element (general)
+    const elementMatch = stepDesc.match(/wait\s+for\s+['"]([^'"]+)['"]/i);
+    if (elementMatch && !/\bseconds?\b|\bmilliseconds?\b/.test(lower)) {
+      const selector = elementMatch[1];
+      await page.waitForSelector(selector, { state: 'visible', timeout: 10000 });
+      console.log(`  → Waited for: ${selector}`);
+      return;
+    }
+    
+    // Wait X seconds/milliseconds
+    const timeMatch = stepDesc.match(/wait\s+(\d+)\s+(seconds?|milliseconds?)/i);
+    if (timeMatch) {
+      const amount = parseInt(timeMatch[1]);
+      const unit = timeMatch[2].toLowerCase();
+      const ms = unit.startsWith('second') ? amount * 1000 : amount;
+      await page.waitForTimeout(ms);
+      console.log(`  → Waited ${amount} ${unit}`);
+      return;
+    }
+  }
+
+  // ============================================================================
+  // 3. CLICK / PRESS / TAP
+  // ============================================================================
+  
+  if (/\b(click|press|tap)\b/.test(lower)) {
+    const target = extractQuoted(stepDesc);
+    
+    if (!target) {
+      throw new Error('No click target specified');
+    }
+
+    // Check if it's a CSS selector or text-based
+    if (isCSSSelector(target)) {
+      // It's a CSS selector - use directly
+      await page.click(target, { timeout: 10000 });
+      console.log(`  → Clicked selector: ${target}`);
+      return;
+    } else if (isTextSelector(target)) {
+      // It's already a Playwright text selector
+      await page.click(target, { timeout: 10000 });
+      console.log(`  → Clicked: ${target}`);
+      return;
+    } else {
+      // It's text content - try different approaches
+      try {
+        // Try exact text match first
+        await page.click(`text="${target}"`, { timeout: 5000 });
+        console.log(`  → Clicked text: "${target}"`);
+        return;
+      } catch (e) {
+        // Try partial text match
+        try {
+          await page.click(`text=${target}`, { timeout: 5000 });
+          console.log(`  → Clicked text (partial): "${target}"`);
+          return;
+        } catch (e2) {
+          // Try has-text for buttons/links
+          try {
+            await page.click(`button:has-text("${target}")`, { timeout: 3000 });
+            console.log(`  → Clicked button with text: "${target}"`);
+            return;
+          } catch (e3) {
+            // Last resort: try as-is (might be an ID or class without prefix)
+            await page.click(target, { timeout: 3000 });
+            console.log(`  → Clicked: ${target}`);
+            return;
+          }
+        }
+      }
+    }
+  }
+
+  // ============================================================================
+  // 4. TYPE / FILL / ENTER
+  // ============================================================================
+  
+  if (/\b(type|enter|fill)\b/.test(lower)) {
+    // Extract "text" and "selector" from: Type 'text' into 'selector'
+    const match = stepDesc.match(/(?:type|enter|fill)\s+['"]([^'"]+)['"]\s+(?:in|into|to)\s+['"]([^'"]+)['"]/i);
+    
+    if (match) {
+      const text = match[1];
+      const target = match[2];
+      
+      // Replace variables if present
+      const finalText = text.replace(/\{(\w+)\}/g, (m, varName) => {
+        return testContext[varName] || m;
+      });
+
+      if (isCSSSelector(target)) {
+        await page.fill(target, finalText, { timeout: 10000 });
+        console.log(`  → Typed "${finalText}" into ${target}`);
+        return;
+      } else {
+        // Try to find input by placeholder or name containing the text
+        const selectors = [
+          `input[placeholder*="${target}" i]`,
+          `input[name*="${target}" i]`,
+          `input[aria-label*="${target}" i]`,
+          `textarea[placeholder*="${target}" i]`
+        ];
+        
+        for (const selector of selectors) {
+          try {
+            await page.fill(selector, finalText, { timeout: 3000 });
+            console.log(`  → Typed "${finalText}" into ${selector}`);
+            return;
+          } catch (e) {
+            // Continue to next selector
+          }
+        }
+        
+        // If nothing worked, try the target as-is
+        await page.fill(target, finalText, { timeout: 5000 });
+        console.log(`  → Typed "${finalText}" into ${target}`);
+        return;
+      }
+    }
+    
+    throw new Error('Could not parse type/fill command');
+  }
+
+  // ============================================================================
+  // 5. VERIFICATION / ASSERTION
+  // ============================================================================
+  
+  if (/\b(verify|check|assert|should see|expect)\b/.test(lower)) {
+    // Verify element is visible
+    if (lower.includes('is visible') || lower.includes('visible')) {
+      const target = extractQuoted(stepDesc);
+      
+      if (isCSSSelector(target) || isTextSelector(target)) {
+        await page.waitForSelector(target, { state: 'visible', timeout: 10000 });
+        console.log(`  → Verified ${target} is visible`);
+        return;
+      } else {
+        // Text-based verification
+        await page.waitForSelector(`text="${target}"`, { state: 'visible', timeout: 10000 });
+        console.log(`  → Verified text "${target}" is visible`);
+        return;
+      }
+    }
+    
+    // Verify URL contains
+    if (lower.includes('url contains')) {
+      const fragment = extractQuoted(stepDesc);
+      const currentUrl = page.url();
+      
+      if (!currentUrl.includes(fragment)) {
+        throw new Error(`URL does not contain "${fragment}". Current URL: ${currentUrl}`);
+      }
+      
+      console.log(`  → Verified URL contains "${fragment}"`);
+      return;
+    }
+    
+    // Verify URL is
+    if (lower.includes('url is')) {
+      const expectedPath = extractQuoted(stepDesc);
+      const currentUrl = page.url();
+      
+      // Check if URL ends with the expected path or equals it
+      if (!currentUrl.endsWith(expectedPath) && !currentUrl.includes(expectedPath)) {
+        throw new Error(`URL mismatch. Expected path "${expectedPath}", got "${currentUrl}"`);
+      }
+      
+      console.log(`  → Verified URL is/contains "${expectedPath}"`);
+      return;
+    }
+    
+    // Verify contains text
+    if (lower.includes('contains text')) {
+      const parts = stepDesc.match(/verify\s+['"]([^'"]+)['"]\s+contains\s+text\s+['"]([^'"]+)['"]/i);
+      if (parts) {
+        const selector = parts[1];
+        const expectedText = parts[2];
+        
+        const element = await page.locator(selector);
+        const actualText = await element.textContent();
+        
+        if (!actualText || !actualText.includes(expectedText)) {
+          throw new Error(`Text mismatch. Expected "${expectedText}" in "${actualText}"`);
+        }
+        
+        console.log(`  → Verified ${selector} contains text "${expectedText}"`);
+        return;
+      }
+    }
+    
+    // Verify page title
+    if (lower.includes('page title')) {
+      const expectedTitle = extractQuoted(stepDesc);
+      const actualTitle = await page.title();
+      
+      if (actualTitle !== expectedTitle) {
+        throw new Error(`Title mismatch. Expected "${expectedTitle}", got "${actualTitle}"`);
+      }
+      
+      console.log(`  → Verified page title is "${expectedTitle}"`);
+      return;
+    }
+    
+    // Generic verify - try as text visibility
+    const target = extractQuoted(stepDesc);
+    if (target) {
+      try {
+        await page.waitForSelector(`text="${target}"`, { state: 'visible', timeout: 5000 });
+        console.log(`  → Verified "${target}" is visible`);
+        return;
+      } catch (e) {
+        throw new Error(`Verification failed: Could not find visible text "${target}"`);
+      }
+    }
+  }
+
+  // ============================================================================
+  // 6. OTHER ACTIONS
+  // ============================================================================
+  
+  if (lower.startsWith('clear field')) {
+    const selector = extractQuoted(stepDesc);
+    await page.fill(selector, '', { timeout: 10000 });
+    console.log(`  → Cleared field: ${selector}`);
     return;
   }
 
-  console.log(`  → [WARN] Unrecognized step type, waiting 500ms...`);
+  if (lower.startsWith('select') && lower.includes('from')) {
+    const option = extractQuoted(stepDesc, 0);
+    const selector = extractQuoted(stepDesc, 1);
+    await page.selectOption(selector, { label: option }, { timeout: 10000 });
+    console.log(`  → Selected "${option}" from ${selector}`);
+    return;
+  }
+
+  if (lower.startsWith('hover over')) {
+    const selector = extractQuoted(stepDesc);
+    await page.hover(selector, { timeout: 10000 });
+    console.log(`  → Hovered over ${selector}`);
+    return;
+  }
+
+  if (lower.startsWith('screenshot')) {
+    const name = extractQuoted(stepDesc) || 'screenshot';
+    const screenshot = await page.screenshot({ fullPage: true });
+    console.log(`  → Captured screenshot: ${name}`);
+    // Screenshot is already captured in the main test execution loop
+    return;
+  }
+
+  console.log(`  → [WARN] Unrecognized step type: "${stepDesc}", waiting 500ms...`);
   await page.waitForTimeout(500);
 }
+
+
 
 function extractText(str, removeWords) {
   let text = str;
