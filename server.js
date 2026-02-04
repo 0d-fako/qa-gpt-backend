@@ -338,12 +338,8 @@ async function executeTestCase(page, tc, config, testContext) {
             networkLogs: []
           };
 
-          try {
-            await page.waitForSelector('input[name=password]', { timeout: 60000 });
-await page.waitForSelector('input[name=username]', { timeout: 60000 });
-await page.waitForSelector('input[name=password]', { timeout: 60000 });
-await page.waitForSelector('input[name=username]', { timeout: 60000 });
-await executeStep(page, stepDesc, testContext);
+            try {
+            await executeStep(page, stepDesc, testContext);
 
             if (config?.evidence?.capture_screenshots) {
               const screenshot = await page.screenshot({
