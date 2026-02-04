@@ -1,4 +1,4 @@
-// server.js - Playwright Backend with MongoDB
+
 const express = require('express');
 require('dotenv').config();
 const cors = require('cors');
@@ -244,10 +244,7 @@ app.delete('/api/runs/:runId', async (req, res) => {
 // Real Playwright execution
 async function executeTests(testCases, config, url) {
   let browser;
-  let context;
   const results = [];
-  // Context for variables
-  const testContext = {};
 
   try {
     const browserType = config?.browser?.type === 'firefox' ? firefox : chromium;
@@ -260,31 +257,48 @@ async function executeTests(testCases, config, url) {
       args: ['--no-sandbox', '--disable-setuid-sandbox']
     });
 
-    context = await browser.newContext({
-      viewport: { width: 1920, height: 1080 },
-      userAgent: 'QA-GPT/2.0 Playwright Agent'
-    });
-
-    const page = await context.newPage();
-
-    if (config?.authentication?.enabled && config.authentication.loginUrl) {
-      console.log('[AUTH] Performing login...');
-      await performLogin(page, config.authentication);
-    }
-
-    console.log(`[NAV] Navigating to ${url}`);
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-
+    // Execute each test case in isolation with its own context and page
     for (const tc of testCases) {
       console.log(`[TEST] Executing ${tc.id}: ${tc.title}`);
-      const result = await executeTestCase(page, tc, config, testContext);
-      results.push(result);
+      
+      // Create fresh context and page for each test case
+      const context = await browser.newContext({
+        viewport: { width: 1920, height: 1080 },
+        userAgent: 'QA-GPT/2.0 Playwright Agent'
+      });
+
+      const page = await context.newPage();
+      const testContext = {}; // Fresh variable context for each test
+
+      try {
+        if (config?.authentication?.enabled && config.authentication.loginUrl) {
+          console.log('[AUTH] Performing login...');
+          await performLogin(page, config.authentication);
+        }
+
+        console.log(`[NAV] Navigating to ${url}`);
+        await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
+
+        const result = await executeTestCase(page, tc, config, testContext);
+        results.push(result);
+      } catch (error) {
+        console.error(`[ERROR] Test ${tc.id} failed:`, error);
+        results.push({
+          ...tc,
+          status: 'FAIL',
+          executedSteps: [],
+          error: error.message,
+          summary: { passed: 0, failed: 1, total: 1 }
+        });
+      } finally {
+        // Clean up context after each test
+        await context.close().catch(() => {});
+      }
     }
   } catch (error) {
     console.error('[ERROR] Test execution failed:', error);
     throw error;
   } finally {
-    if (context) await context.close().catch(() => { });
     if (browser) await browser.close().catch(() => { });
     console.log('[PLAYWRIGHT] Browser closed');
   }
