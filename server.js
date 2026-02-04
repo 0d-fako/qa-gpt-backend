@@ -513,7 +513,7 @@ async function executeStep(page, stepDesc, testContext) {
       // For paths, we navigate relative to current origin
       const currentUrl = new URL(page.url());
       const fullUrl = path.startsWith('http') ? path : `${currentUrl.origin}${path}`;
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 30000 });
       console.log(`  → Navigated to: ${fullUrl}`);
       return;
     }
