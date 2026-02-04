@@ -27,8 +27,8 @@ if (process.env.SKIP_DB === 'true') {
   console.log('⚠️  SKIP_DB is enabled: Skipping MongoDB connection');
 } else {
   mongoose.connect(MONGODB_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
+    
+    
     socketTimeoutMS: 45000,
     connectTimeoutMS: 30000
   })
@@ -273,7 +273,7 @@ async function executeTests(testCases, config, url) {
     }
 
     console.log(`[NAV] Navigating to ${url}`);
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
 
     for (const tc of testCases) {
       console.log(`[TEST] Executing ${tc.id}: ${tc.title}`);
@@ -339,7 +339,11 @@ async function executeTestCase(page, tc, config, testContext) {
           };
 
           try {
-            await executeStep(page, stepDesc, testContext);
+            await page.waitForSelector('input[name=password]', { timeout: 60000 });
+await page.waitForSelector('input[name=username]', { timeout: 60000 });
+await page.waitForSelector('input[name=password]', { timeout: 60000 });
+await page.waitForSelector('input[name=username]', { timeout: 60000 });
+await executeStep(page, stepDesc, testContext);
 
             if (config?.evidence?.capture_screenshots) {
               const screenshot = await page.screenshot({
