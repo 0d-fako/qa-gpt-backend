@@ -101,7 +101,7 @@ app.post(['/api/execute', '/execute'], async (req, res) => {
     res.json({
       success: true,
       runId,
-      results,
+      testCases: results,  
       summary
     });
 
@@ -421,7 +421,8 @@ async function executeStep(page, stepDesc, testContext) {
    * Check if a string looks like a CSS selector
    */
   function isCSSSelector(text) {
-    return /^[a-z]+\[|^\[|^#|^\.|^>|^[a-z]+:/i.test(text);
+  // Check for CSS selectors or Playwright-specific selectors
+  return /^[a-z]+\[|^\[|^#|^\.|^>|^[a-z]+:|:has-text|:visible|:nth-match/i.test(text);
   }
 
   /**
@@ -524,6 +525,13 @@ async function executeStep(page, stepDesc, testContext) {
   // ============================================================================
   
   if (/^wait\b/i.test(stepDesc)) {
+
+    if (lower.includes('navigation to')) {
+      const targetPath = extractQuoted(stepDesc);
+      await page.waitForURL(`**/*${targetPath}*`, { timeout: 15000 });
+      console.log(`  → Waited for navigation to: ${targetPath}`);
+      return;
+    }
     // Wait for network idle
     if (lower.includes('network')) {
       await page.waitForLoadState('networkidle', { timeout: 30000 });
