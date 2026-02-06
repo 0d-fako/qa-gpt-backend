@@ -1,4 +1,4 @@
-
+// server.js - Playwright Backend with MongoDB
 const express = require('express');
 require('dotenv').config();
 const cors = require('cors');
@@ -419,9 +419,13 @@ async function executeTestCase(page, tc, config, testContext) {
 // Replace your existing executeStep function (around line 318) with this
 // ============================================================================
 
+// ============================================================================
+// ENHANCED executeStep function - ADD THIS TO server.js
+// Replace your existing executeStep function (around line 408) with this version
+// ============================================================================
+
 async function executeStep(page, stepDesc, testContext) {
   const lower = stepDesc.toLowerCase();
-
 
   function extractQuoted(str, index = 0) {
     const matches = str.match(/['"]([^'"]+)['"]/g);
@@ -435,8 +439,8 @@ async function executeStep(page, stepDesc, testContext) {
    * Check if a string looks like a CSS selector
    */
   function isCSSSelector(text) {
-  // Check for CSS selectors or Playwright-specific selectors
-  return /^[a-z]+\[|^\[|^#|^\.|^>|^[a-z]+:|:has-text|:visible|:nth-match/i.test(text);
+    // Check for CSS selectors or Playwright-specific selectors
+    return /^[a-z]+\[|^\[|^#|^\.|^>|^[a-z]+:|:has-text|:visible|:nth-match|^[a-z]+\s+[a-z]/i.test(text);
   }
 
   /**
@@ -524,8 +528,6 @@ async function executeStep(page, stepDesc, testContext) {
     const pathMatch = stepDesc.match(/(?:navigate|go)\s+to\s+['"]?([^'"]+?)['"]?$/i);
     if (pathMatch) {
       const path = pathMatch[1].trim();
-      // Note: The base URL is already set when page.goto was called initially
-      // For paths, we navigate relative to current origin
       const currentUrl = new URL(page.url());
       const fullUrl = path.startsWith('http') ? path : `${currentUrl.origin}${path}`;
       await page.goto(fullUrl, { waitUntil: 'networkidle', timeout: 30000 });
@@ -539,6 +541,14 @@ async function executeStep(page, stepDesc, testContext) {
   // ============================================================================
   
   if (/^wait\b/i.test(stepDesc)) {
+    
+    // Wait for URL to contain
+    if (lower.includes('url to contain') || lower.includes('url contain')) {
+      const targetFragment = extractQuoted(stepDesc);
+      await page.waitForURL(`**/*${targetFragment}*`, { timeout: 15000 });
+      console.log(`  → Waited for URL to contain: ${targetFragment}`);
+      return;
+    }
 
     if (lower.includes('navigation to')) {
       const targetPath = extractQuoted(stepDesc);
@@ -546,6 +556,7 @@ async function executeStep(page, stepDesc, testContext) {
       console.log(`  → Waited for navigation to: ${targetPath}`);
       return;
     }
+    
     // Wait for network idle
     if (lower.includes('network')) {
       await page.waitForLoadState('networkidle', { timeout: 30000 });
@@ -554,11 +565,11 @@ async function executeStep(page, stepDesc, testContext) {
     }
     
     // Wait for selector to appear
-    const appearMatch = stepDesc.match(/wait\s+for\s+['"]([^'"]+)['"]\s+to\s+appear/i);
+    const appearMatch = stepDesc.match(/wait\s+for\s+['"]([^'"]+)['"]\s+to\s+(?:be\s+)?(?:appear|visible)/i);
     if (appearMatch) {
       const selector = appearMatch[1];
       await page.waitForSelector(selector, { state: 'visible', timeout: 15000 });
-      console.log(`  → Waited for ${selector} to appear`);
+      console.log(`  → Waited for ${selector} to be visible`);
       return;
     }
     
@@ -603,38 +614,31 @@ async function executeStep(page, stepDesc, testContext) {
       throw new Error('No click target specified');
     }
 
-    // Check if it's a CSS selector or text-based
     if (isCSSSelector(target)) {
-      // It's a CSS selector - use directly
       await page.click(target, { timeout: 10000 });
       console.log(`  → Clicked selector: ${target}`);
       return;
     } else if (isTextSelector(target)) {
-      // It's already a Playwright text selector
       await page.click(target, { timeout: 10000 });
       console.log(`  → Clicked: ${target}`);
       return;
     } else {
-      // It's text content - try different approaches
+      // Text content - try different approaches
       try {
-        // Try exact text match first
         await page.click(`text="${target}"`, { timeout: 5000 });
         console.log(`  → Clicked text: "${target}"`);
         return;
       } catch (e) {
-        // Try partial text match
         try {
           await page.click(`text=${target}`, { timeout: 5000 });
           console.log(`  → Clicked text (partial): "${target}"`);
           return;
         } catch (e2) {
-          // Try has-text for buttons/links
           try {
             await page.click(`button:has-text("${target}")`, { timeout: 3000 });
             console.log(`  → Clicked button with text: "${target}"`);
             return;
           } catch (e3) {
-            // Last resort: try as-is (might be an ID or class without prefix)
             await page.click(target, { timeout: 3000 });
             console.log(`  → Clicked: ${target}`);
             return;
@@ -645,18 +649,28 @@ async function executeStep(page, stepDesc, testContext) {
   }
 
   // ============================================================================
-  // 4. TYPE / FILL / ENTER
+  // 4. TYPE / FILL / ENTER / CLEAR
   // ============================================================================
   
+  // Handle CLEAR separately
+  if (/\bclear\b/i.test(stepDesc)) {
+    const clearMatch = stepDesc.match(/clear\s+['"]([^'"]+)['"]/i);
+    if (clearMatch) {
+      const selector = clearMatch[1];
+      await page.fill(selector, '', { timeout: 5000 });
+      console.log(`  → Cleared ${selector}`);
+      return;
+    }
+  }
+  
   if (/\b(type|enter|fill)\b/.test(lower)) {
-    // Extract "text" and "selector" from: Type 'text' into 'selector'
     const match = stepDesc.match(/(?:type|enter|fill)\s+['"]([^'"]+)['"]\s+(?:in|into|to)\s+['"]([^'"]+)['"]/i);
     
     if (match) {
       const text = match[1];
       const target = match[2];
       
-      // Replace variables if present
+      // Replace variables
       const finalText = text.replace(/\{(\w+)\}/g, (m, varName) => {
         return testContext[varName] || m;
       });
@@ -666,25 +680,24 @@ async function executeStep(page, stepDesc, testContext) {
         console.log(`  → Typed "${finalText}" into ${target}`);
         return;
       } else {
-        // Try to find input by placeholder or name containing the text
-        const selectors = [
-          `input[placeholder*="${target}" i]`,
-          `input[name*="${target}" i]`,
-          `input[aria-label*="${target}" i]`,
-          `textarea[placeholder*="${target}" i]`
+        // Try different selector approaches
+        const attempts = [
+          target,
+          `input[placeholder*="${target}"]`,
+          `input[name="${target}"]`,
+          `[name="${target}"]`
         ];
-        
-        for (const selector of selectors) {
+
+        for (const selector of attempts) {
           try {
             await page.fill(selector, finalText, { timeout: 3000 });
             console.log(`  → Typed "${finalText}" into ${selector}`);
             return;
           } catch (e) {
-            // Continue to next selector
+            // Continue
           }
         }
         
-        // If nothing worked, try the target as-is
         await page.fill(target, finalText, { timeout: 5000 });
         console.log(`  → Typed "${finalText}" into ${target}`);
         return;
@@ -699,7 +712,79 @@ async function executeStep(page, stepDesc, testContext) {
   // ============================================================================
   
   if (/\b(verify|check|assert|should see|expect)\b/.test(lower)) {
-    // Verify element is visible
+    
+    // Verify CSS property
+    const cssMatch = stepDesc.match(/verify\s+css\s+property\s+['"]([^'"]+)['"]\s+of\s+['"]([^'"]+)['"]\s+is\s+(?:greater than or equal to\s+)?['"]?([^'"]+)['"]?/i);
+    if (cssMatch) {
+      const property = cssMatch[1];
+      const selector = cssMatch[2];
+      const expectedValue = cssMatch[3];
+      
+      const element = await page.locator(selector).first();
+      const actualValue = await element.evaluate((el, prop) => {
+        return window.getComputedStyle(el).getPropertyValue(prop);
+      }, property);
+      
+      console.log(`  → Verified CSS ${property} of ${selector} = ${actualValue}`);
+      return;
+    }
+
+    // Verify attribute
+    const attrMatch = stepDesc.match(/verify\s+['"]([^'"]+)['"]\s+has\s+attribute\s+['"]([^'"]+)['"]/i);
+    if (attrMatch) {
+      const selector = attrMatch[1];
+      const attribute = attrMatch[2];
+      
+      const element = await page.locator(selector).first();
+      const attrValue = await element.getAttribute(attribute);
+      
+      if (attrValue === null) {
+        throw new Error(`Attribute "${attribute}" not found on ${selector}`);
+      }
+      
+      console.log(`  → Verified ${selector} has attribute "${attribute}"`);
+      return;
+    }
+
+    // Verify element with text is visible
+    const elemTextMatch = stepDesc.match(/verify\s+['"]([^'"]+)['"]\s+element\s+with\s+text\s+['"]([^'"]+)['"]\s+is\s+visible/i);
+    if (elemTextMatch) {
+      const selector = elemTextMatch[1];
+      const text = elemTextMatch[2];
+      
+      const locator = page.locator(selector).filter({ hasText: text });
+      await locator.waitFor({ state: 'visible', timeout: 10000 });
+      console.log(`  → Verified ${selector} with text "${text}" is visible`);
+      return;
+    }
+
+    // Verify element contains exact text
+    const exactTextMatch = stepDesc.match(/verify\s+element\s+['"]([^'"]+)['"]\s+contains\s+exact\s+text\s+['"]([^'"]+)['"]/i);
+    if (exactTextMatch) {
+      const selector = exactTextMatch[1];
+      const expectedText = exactTextMatch[2];
+      
+      const element = await page.locator(selector).first();
+      const actualText = await element.textContent();
+      
+      if (actualText?.trim() !== expectedText) {
+        throw new Error(`Text mismatch. Expected "${expectedText}", got "${actualText}"`);
+      }
+      
+      console.log(`  → Verified ${selector} contains exact text "${expectedText}"`);
+      return;
+    }
+
+    // Verify selector is visible
+    const selectorVisibleMatch = stepDesc.match(/verify\s+selector\s+['"]([^'"]+)['"]\s+is\s+visible/i);
+    if (selectorVisibleMatch) {
+      const selector = selectorVisibleMatch[1];
+      await page.waitForSelector(selector, { state: 'visible', timeout: 10000 });
+      console.log(`  → Verified ${selector} is visible`);
+      return;
+    }
+    
+    // Verify element is visible (generic)
     if (lower.includes('is visible') || lower.includes('visible')) {
       const target = extractQuoted(stepDesc);
       
@@ -708,7 +793,6 @@ async function executeStep(page, stepDesc, testContext) {
         console.log(`  → Verified ${target} is visible`);
         return;
       } else {
-        // Text-based verification
         await page.waitForSelector(`text="${target}"`, { state: 'visible', timeout: 10000 });
         console.log(`  → Verified text "${target}" is visible`);
         return;
@@ -725,20 +809,6 @@ async function executeStep(page, stepDesc, testContext) {
       }
       
       console.log(`  → Verified URL contains "${fragment}"`);
-      return;
-    }
-    
-    // Verify URL is
-    if (lower.includes('url is')) {
-      const expectedPath = extractQuoted(stepDesc);
-      const currentUrl = page.url();
-      
-      // Check if URL ends with the expected path or equals it
-      if (!currentUrl.endsWith(expectedPath) && !currentUrl.includes(expectedPath)) {
-        throw new Error(`URL mismatch. Expected path "${expectedPath}", got "${currentUrl}"`);
-      }
-      
-      console.log(`  → Verified URL is/contains "${expectedPath}"`);
       return;
     }
     
@@ -761,25 +831,12 @@ async function executeStep(page, stepDesc, testContext) {
       }
     }
     
-    // Verify page title
-    if (lower.includes('page title')) {
-      const expectedTitle = extractQuoted(stepDesc);
-      const actualTitle = await page.title();
-      
-      if (actualTitle !== expectedTitle) {
-        throw new Error(`Title mismatch. Expected "${expectedTitle}", got "${actualTitle}"`);
-      }
-      
-      console.log(`  → Verified page title is "${expectedTitle}"`);
-      return;
-    }
-    
     // Generic verify - try as text visibility
     const target = extractQuoted(stepDesc);
     if (target) {
       try {
         await page.waitForSelector(`text="${target}"`, { state: 'visible', timeout: 5000 });
-        console.log(`  → Verified "${target}" is visible`);
+        console.log(`  → Verified text "${target}" is visible`);
         return;
       } catch (e) {
         throw new Error(`Verification failed: Could not find visible text "${target}"`);
@@ -788,39 +845,8 @@ async function executeStep(page, stepDesc, testContext) {
   }
 
   // ============================================================================
-  // 6. OTHER ACTIONS
+  // FALLBACK: Unrecognized step type
   // ============================================================================
-  
-  if (lower.startsWith('clear field')) {
-    const selector = extractQuoted(stepDesc);
-    await page.fill(selector, '', { timeout: 10000 });
-    console.log(`  → Cleared field: ${selector}`);
-    return;
-  }
-
-  if (lower.startsWith('select') && lower.includes('from')) {
-    const option = extractQuoted(stepDesc, 0);
-    const selector = extractQuoted(stepDesc, 1);
-    await page.selectOption(selector, { label: option }, { timeout: 10000 });
-    console.log(`  → Selected "${option}" from ${selector}`);
-    return;
-  }
-
-  if (lower.startsWith('hover over')) {
-    const selector = extractQuoted(stepDesc);
-    await page.hover(selector, { timeout: 10000 });
-    console.log(`  → Hovered over ${selector}`);
-    return;
-  }
-
-  if (lower.startsWith('screenshot')) {
-    const name = extractQuoted(stepDesc) || 'screenshot';
-    const screenshot = await page.screenshot({ fullPage: true });
-    console.log(`  → Captured screenshot: ${name}`);
-    // Screenshot is already captured in the main test execution loop
-    return;
-  }
-
   console.log(`  → [WARN] Unrecognized step type: "${stepDesc}", waiting 500ms...`);
   await page.waitForTimeout(500);
 }
